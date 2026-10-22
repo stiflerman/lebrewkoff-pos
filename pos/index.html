@@ -122,6 +122,12 @@
   .banner{background:#3a1512;border-bottom:1px solid #6a2f22;color:#f2cdbf;padding:6px 15px;
     font-size:11.5px;display:none;align-items:center;gap:8px}
   .banner.on{display:flex}
+  .banner.warn{background:#3a2a07;border-bottom-color:#6a5420;color:#f6e6b6}
+  .sbar{background:var(--card2);border-bottom:1px solid var(--line);padding:5px 15px;
+    font-size:11px;color:var(--muted);display:none;align-items:center;gap:5px 12px;flex-wrap:wrap}
+  .sbar.on{display:flex}
+  .sbar b{color:var(--text);font-weight:600}
+  .sbar .k{color:var(--gold2)}
   .chips{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:5px}
   .ch{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 4px;
     text-align:center;cursor:pointer;font-size:10.5px;line-height:1.35;transition:.15s;user-select:none}
@@ -204,6 +210,8 @@
     </div>
   </div>
   <div class="banner" id="banner">📴 <b>โหมดออฟไลน์</b> — ขายต่อได้ตามปกติ บิลเก็บไว้ในเครื่อง พอเน็ตกลับมาจะส่งขึ้นระบบให้เอง</div>
+  <div class="banner" id="sbanner"></div>
+  <div class="sbar" id="sbar"></div>
   <div class="body">
     <div class="lft">
       <div class="tabs" id="tabs"></div>
@@ -352,6 +360,7 @@ async function afterLogin(){
   await loadAll();
   await findShift();
   renderAll();
+  shiftGate();
   trySync();
   setInterval(trySync, 45000);
 }
@@ -411,6 +420,11 @@ async function refreshStock(){
 }
 
 /* ---------------- กะ ---------------- */
+// วันที่ทางบัญชี = วันที่ตามเวลาลาว (ต้องตรงกับฝั่งฐานข้อมูล)
+const BIZ = () => new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Vientiane'});
+const hhmm = t => new Date(t).toLocaleTimeString('th-TH',
+  {timeZone:'Asia/Vientiane',hour:'2-digit',minute:'2-digit'});
+
 async function findShift(){
   if(!S.device) return;
   try{
@@ -418,8 +432,90 @@ async function findShift(){
       .eq('branch_id', S.branch.id).eq('device_id', S.device.id).eq('status','open')
       .order('opened_at',{ascending:false}).limit(1);
     S.session = (data&&data[0]) || null;
-    if(S.session) await loadSpend();
+    S.stale   = !!(S.session && S.session.biz_date && S.session.biz_date !== BIZ());
+    if(S.session){
+      await loadSpend();
+      // ชื่อคนเปิดกะ (เอาไว้โชว์ว่ากะนี้ของใคร)
+      try{
+        const { data:op } = await sb.from('staff').select('id,full_name,nickname')
+          .eq('id', S.session.opened_by).maybeSingle();
+        S.openedByName = op ? (op.nickname||op.full_name) : '—';
+      }catch(e){ S.openedByName='—'; }
+      try{
+        const { count } = await sb.from('sales').select('id',{count:'exact',head:true})
+          .eq('session_id', S.session.id);
+        S.sessionBills = count||0;
+      }catch(e){ S.sessionBills=null; }
+    }
   }catch(e){}
+}
+
+/* --- ด่านตรวจตอนเข้าใช้: กะค้างข้ามวัน / กะของคนอื่น --- */
+const ackKey = () => 'lbk_ack_'+(S.session?S.session.id:'')+'_'+(S.me?S.me.id:'');
+function shiftGate(){
+  if(!S.session) return;
+  if(S.stale) return staleShiftModal();
+  if(S.session.opened_by === S.me.id) return;          // กะของตัวเอง ไม่ต้องถาม
+  if(LS.g(ackKey(), null)) return;                     // รับเวรไปแล้วในเครื่องนี้
+  handoverModal();
+}
+function staleShiftModal(){
+  const d = S.session.biz_date;
+  openM(`<h3>⚠️ มีกะค้างของวันก่อน</h3>
+    <div class="note warn" style="margin-top:0">
+      กะนี้เปิดไว้ของ<b>วันที่ ${esc(d)}</b> โดย <b>${esc(S.openedByName||'—')}</b>
+      เวลา ${esc(hhmm(S.session.opened_at))} แต่วันนี้เป็นวันที่ <b>${esc(BIZ())}</b></div>
+    <div class="note">ถ้าขายต่อในกะเก่า <b>ยอดของวันนี้จะไปลงวันก่อน</b> รายงานรายวันจะเพี้ยนทั้งสองวัน
+      — ต้อง<b>ปิดกะเก่าให้เสร็จก่อน</b> (นับเงินในลิ้นชักตามปกติ) แล้วเปิดกะใหม่ของวันนี้</div>
+    <table style="margin-top:9px"><tbody>
+      <tr><td>เงินตั้งต้นของกะเก่า</td><td class="num">${fmt(S.session.opening_float)} ₭</td></tr>
+      <tr><td>ขายไปแล้วในกะนี้</td><td class="num">${S.sessionBills==null?'—':S.sessionBills+' ใบ'}</td></tr>
+    </tbody></table>
+    <div class="macts"><button class="btn grn wide" onclick="closeM();closeShift()">ปิดกะเก่าตอนนี้</button></div>`);
+}
+function handoverModal(){
+  openM(`<h3>🔄 รับเวรต่อ</h3>
+    <div class="note warn" style="margin-top:0">เครื่องนี้<b>มีกะที่เปิดอยู่แล้ว</b> ไม่ใช่กะที่คุณเปิดเอง</div>
+    <table style="margin-top:9px"><tbody>
+      <tr><td>เปิดกะโดย</td><td class="num"><b>${esc(S.openedByName||'—')}</b></td></tr>
+      <tr><td>เปิดเมื่อ</td><td class="num">${esc(hhmm(S.session.opened_at))} น.</td></tr>
+      <tr><td>เงินตั้งต้นในลิ้นชัก</td><td class="num"><b>${fmt(S.session.opening_float)} ₭</b></td></tr>
+      <tr><td>ขายไปแล้ว</td><td class="num">${S.sessionBills==null?'—':S.sessionBills+' ใบ'}</td></tr>
+    </tbody></table>
+    <div class="note">กด <b>รับเวรต่อ</b> ถ้าคุณจะขายต่อในกะนี้ (เงินในลิ้นชักใบเดียวกัน ระบบบันทึกว่าคุณรับเวรเมื่อไหร่)
+      · ถ้าเป็นกะของกะก่อนที่ลืมปิด ให้กด <b>ปิดกะนี้ก่อน</b> แล้วเปิดกะใหม่</div>
+    <div id="ho_err"></div>
+    <div class="macts" style="flex-direction:column;gap:7px">
+      <button class="btn grn wide" id="ho_btn" onclick="doTakeOver()">รับเวรต่อ — ขายในกะนี้</button>
+      <button class="btn sec wide" onclick="closeM();closeShift()">ปิดกะนี้ก่อน (ต้องนับเงิน)</button></div>`);
+}
+async function doTakeOver(){
+  const b=$('ho_btn');
+  if(!online){   // ออฟไลน์ก็ให้รับเวรได้ แต่บันทึกฝั่งเซิร์ฟเวอร์ตอนเน็ตกลับมาไม่ได้ → แจ้งตรงๆ
+    LS.s(ackKey(), 1); closeM(); renderAll();
+    return toast('รับเวรต่อแล้ว (ออฟไลน์ — ยังไม่ได้บันทึกขึ้นระบบ)','warn');
+  }
+  b.disabled=true; b.innerHTML='<span class="spin"></span> กำลังบันทึก...';
+  try{
+    const { data, error } = await sb.rpc('shift_take_over',
+      { p_session_id:S.session.id, p_staff_id:S.me.id });
+    if(error) throw error;
+    if(!data.ok){
+      b.disabled=false; b.textContent='รับเวรต่อ — ขายในกะนี้';
+      if(data.stale){ closeM(); S.stale=true; renderAll(); return staleShiftModal(); }
+      return $('ho_err').innerHTML=`<div class="note warn">${esc(data.message||'ไม่สำเร็จ')}</div>`;
+    }
+    LS.s(ackKey(), 1); closeM(); renderAll(); toast(data.message||'รับเวรต่อแล้ว');
+  }catch(e){
+    b.disabled=false; b.textContent='รับเวรต่อ — ขายในกะนี้';
+    $('ho_err').innerHTML=`<div class="note warn">${esc(e.message||e)}</div>`;
+  }
+}
+// ขายได้หรือยัง — ใช้ที่เดียวทั้งไฟล์
+const canSell = () => !!S.session && !S.stale;
+function sellBlocked(){
+  if(S.stale) return staleShiftModal();
+  return toast('ต้องเปิดกะก่อนถึงจะขายได้','err');
 }
 async function loadSpend(){
   if(!S.session) { spend=[]; return; }
@@ -438,19 +534,30 @@ function openShift(){
     <div class="note" style="margin-top:0">ก่อนเริ่มขาย ต้องนับ<b>เงินทอนตั้งต้น</b>ในลิ้นชักก่อน — ตอนปิดกะระบบจะเอาไปเทียบว่าเงินตรงไหม</div>
     <div class="fld" style="margin-top:10px"><label>เครื่องที่ใช้</label><select id="sd">${devOpts}</select></div>
     <div class="fld"><label>พนักงานเปิดกะ</label><input value="${esc(S.me.nickname||S.me.full_name)}" disabled></div>
-    <div class="fld"><label>เงินทอนตั้งต้นในลิ้นชัก (₭)</label><input id="sf" type="number" inputmode="numeric" value="500000"></div>
+    <div class="fld"><label>เงินทอนตั้งต้นในลิ้นชัก (₭) *</label>
+      <input id="sf" type="number" inputmode="numeric" placeholder="นับเงินในลิ้นชักแล้วใส่ตัวเลข">
+      <div style="font-size:10.5px;color:var(--muted);margin-top:3px">
+        ต้องนับของจริงแล้วใส่เอง · ถ้าลิ้นชักว่างจริงๆ ใส่ 0</div></div>
+    <div id="os_err"></div>
     <div class="macts"><button class="btn sec" onclick="closeM()">ยกเลิก</button>
-      <button class="btn grn" onclick="doOpenShift()">เปิดกะ เริ่มขาย</button></div>`);
+      <button class="btn grn" id="os_btn" onclick="doOpenShift()">เปิดกะ เริ่มขาย</button></div>`);
 }
 async function doOpenShift(){
   if(!online) return toast('เปิดกะต้องมีเน็ต — ลองใหม่เมื่อสัญญาณกลับมา','err');
-  const devId=$('sd').value, flt=Number($('sf').value||0);
+  const err=m=>$('os_err').innerHTML='<div class="note warn" style="margin-top:6px">'+m+'</div>';
+  const raw=$('sf').value.trim();
+  if(raw==='') return err('ต้องนับเงินทอนตั้งต้นในลิ้นชักแล้วใส่ตัวเลขก่อน (ถ้าว่างจริงๆ ใส่ 0)');
+  const flt=Number(raw);
+  if(!isFinite(flt)||flt<0) return err('เงินตั้งต้นต้องเป็นตัวเลขไม่ติดลบ');
+  const devId=$('sd').value;
   S.device = (window.__DEVS||[]).find(d=>d.id===devId) || S.device;
   LS.s('lbk_dev', S.device.id);
+  const b=$('os_btn'); b.disabled=true; b.innerHTML='<span class="spin"></span> กำลังเปิดกะ...';
   const { data, error } = await sb.rpc('open_shift',
     { p_branch_id:S.branch.id, p_device_id:S.device.id, p_staff_id:S.me.id, p_float:flt });
-  if(error) return toast('เปิดกะไม่สำเร็จ: '+error.message,'err');
-  if(!data.ok) return toast(data.message||'เปิดกะไม่สำเร็จ','err');
+  b.disabled=false; b.textContent='เปิดกะ เริ่มขาย';
+  if(error) return err('เปิดกะไม่สำเร็จ: '+error.message);
+  if(!data.ok) return err(data.message||'เปิดกะไม่สำเร็จ');
   closeM(); await findShift(); renderAll();
   toast('เปิดกะแล้ว · เงินตั้งต้น '+fmt(flt)+' ₭');
 }
@@ -497,15 +604,46 @@ async function doCloseShift(){
     </table>
     <div class="note ${kind}"><b>${esc(data.result)}</b>${data.warning?'<br>⚠ '+esc(data.warning):''}</div>
     <div class="macts"><button class="btn" onclick="closeM()">เรียบร้อย</button></div>`);
-  S.session=null; spend=[]; cart=[]; renderAll();
+  S.session=null; S.stale=false; S.openedByName=null; S.sessionBills=null;
+  spend=[]; cart=[]; disc=null; renderAll();
 }
 
 /* ---------------- เมนู + ตะกร้า ---------------- */
 function renderAll(){
   $('meta').textContent = (S.branch?S.branch.name:'—') + ' · เครื่อง ' + (S.device?S.device.device_code:'—')
-    + ' · ' + (S.me?(S.me.nickname||S.me.full_name):'') + (S.session?' · กะเปิดอยู่':' · ยังไม่เปิดกะ');
+    + ' · ' + (S.me?(S.me.nickname||S.me.full_name):'');
   $('shiftBtn').textContent = S.session?'ปิดกะ':'เปิดกะ';
-  renderTabs(); rg(); rc(); qb();
+  rShift(); renderTabs(); rg(); rc(); qb();
+}
+
+/* แถบบอกสถานะกะ — ให้เห็นทุกครั้งว่ากะนี้ของใคร เปิดตอนไหน เงินตั้งต้นเท่าไหร่ */
+function rShift(){
+  const sb_=$('sbar'), bn=$('sbanner');
+  if(!S.session){
+    sb_.classList.remove('on');
+    sb_.innerHTML='';
+    bn.className='banner'; bn.innerHTML='';
+    return;
+  }
+  const mine = S.session.opened_by === S.me.id;
+  sb_.classList.add('on');
+  sb_.innerHTML = `<span>🔓 <b>กะเปิดอยู่</b></span>
+    <span>เปิดโดย <b>${esc(S.openedByName||'—')}</b>${mine?' <span class="k">(คุณ)</span>':''}</span>
+    <span>เวลา <b>${esc(hhmm(S.session.opened_at))}</b> น.</span>
+    <span>วันที่ <b>${esc(S.session.biz_date||'—')}</b></span>
+    <span>เงินตั้งต้น <b>${fmt(S.session.opening_float)} ₭</b></span>
+    <span>ขายแล้ว <b>${S.sessionBills==null?'—':S.sessionBills}</b> ใบ</span>`;
+
+  if(S.stale){
+    bn.className='banner warn on';
+    bn.innerHTML = `⚠️ <b>กะนี้เป็นของวันที่ ${esc(S.session.biz_date)}</b> —
+      ขายวันนี้ไม่ได้จนกว่าจะปิดกะเก่า
+      <a onclick="staleShiftModal()" style="color:inherit;text-decoration:underline;cursor:pointer">ดูวิธีแก้</a>`;
+  } else if(!mine){
+    bn.className='banner warn on';
+    bn.innerHTML = `🔄 คุณกำลังขายใน<b>กะที่ ${esc(S.openedByName||'—')} เปิดไว้</b>
+      (เงินตั้งต้น ${fmt(S.session.opening_float)} ₭) — ตอนปิดกะระบบจะเทียบเงินกับยอดนี้`;
+  } else { bn.className='banner'; bn.innerHTML=''; }
 }
 function renderTabs(){
   $('tabs').innerHTML = CATS.map(c=>
@@ -547,7 +685,7 @@ function tile(m,s){
 }
 
 function tap(pid){
-  if(!S.session) return toast('ต้องเปิดกะก่อนถึงจะขายได้','err');
+  if(!canSell()) return sellBlocked();
   const p = MENU.find(m=>m.id===pid); if(!p) return;
   const sizes = SIZES[pid];
   if(sizes && sizes.length) askOptions(p, sizes);
@@ -722,7 +860,7 @@ function rc(){
         ${esc(x.name)}<small>${fmt(x.price)} ₭</small></div>
       <div class="qb"><button onclick="cq(${i},-1)">−</button><span>${x.q}</span><button onclick="cq(${i},1)">+</button></div>
     </div>`).join('')
-    : '<div class="empty">'+(S.session?'แตะเมนูเพื่อเพิ่มลงออเดอร์':'ยังไม่ได้เปิดกะ')+'</div>';
+    : '<div class="empty">'+(canSell()?'แตะเมนูเพื่อเพิ่มลงออเดอร์':(S.stale?'มีกะค้างของวันก่อน — ต้องปิดกะเก่าก่อน':'ยังไม่ได้เปิดกะ'))+'</div>';
 
   const sub = subTotal(), n = cart.reduce((s,x)=>s+x.q,0);
   const d   = disc ? Math.min(disc.amount, sub) : 0;
@@ -734,9 +872,9 @@ function rc(){
   } else $('cdisc').style.display='none';
   $('ctot').textContent = fmt(sub-d)+' ₭';
   $('ccnt').textContent = n+' รายการ';
-  $('dbtn').disabled = !cart.length || !S.session;
+  $('dbtn').disabled = !cart.length || !canSell();
   $('dbtn').textContent = disc ? '🎁 เปลี่ยนส่วนลด' : '🎁 ใส่ส่วนลด';
-  $('cbtn').disabled = !cart.length || !S.session;
+  $('cbtn').disabled = !cart.length || !canSell();
   $('cbtn').textContent = cart.length?`ชำระเงิน ${fmt(sub-d)} ₭`:'ชำระเงิน';
 }
 function setPay(p){ pay=p; $('pc').classList.toggle('on',p==='cash'); $('pq').classList.toggle('on',p==='qr'); }
@@ -756,7 +894,7 @@ function cutsOf(lines){
 
 /* ---------------- ขาย ---------------- */
 function checkout(){
-  if(!S.session) return toast('ต้องเปิดกะก่อน','err');
+  if(!canSell()) return sellBlocked();
   const total=cart.reduce((s,x)=>s+x.price*x.q,0);
   const cuts=cutsOf(cart);
   const short=Object.keys(cuts).filter(k=>ING[k]&&ING[k].tracked&&(STOCK[k]!==undefined)&&STOCK[k]<cuts[k]);
@@ -903,6 +1041,7 @@ function showQueue(){
 let expCat='ice', expPhoto=null;
 function showExpenses(){
   if(!S.session) return toast('ต้องเปิดกะก่อนถึงจะบันทึกค่าซื้อของได้','err');
+  if(S.stale) return sellBlocked();
   const all=[...spend.map(e=>({desc:e.description,cat:e.category_code||'',amt:Number(e.amount),photo:e.receipt_url,sent:true})),
              ...expq.map(e=>({desc:e.desc,cat:e.cat,amt:e.amt,photo:e.photo,sent:false}))];
   const tot=all.reduce((s,e)=>s+e.amt,0);
