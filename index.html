@@ -87,6 +87,7 @@ var supabase=(()=>{var Ls=Object.create;var qe=Object.defineProperty;var Us=Obje
   input.mini.done{border-color:#2c5a3d}input.mini.diff{border-color:#6a5420;color:var(--amber)}
   .fld{margin-bottom:11px}.fld label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  tr.dim td{opacity:.45}
   .note{background:#241a0e;border:1px solid #4d3a1c;border-radius:10px;padding:10px 12px;
     font-size:11.5px;color:#efdcbd;margin-top:9px}
   .note b{color:var(--gold2)}
@@ -168,6 +169,7 @@ var supabase=(()=>{var Ls=Object.create;var qe=Object.defineProperty;var Us=Obje
     <div class="pane" id="p_po"></div>
     <div class="pane" id="p_count"></div>
     <div class="pane" id="p_loss"></div>
+    <div class="pane" id="p_promo"></div>
     <div class="pane" id="p_team"></div>
   </div>
 </div>
@@ -253,7 +255,7 @@ async function doLogout(){ await sb.auth.signOut(); location.reload(); }
 async function reloadAll(){
   setConn(true,'กำลังโหลด…');
   try{
-    const [locs,stock,ing,tr,po,ct,mv,todo,mon,rl,tm]=await Promise.all([
+    const [locs,stock,ing,tr,po,ct,mv,todo,mon,rl,tm,pm]=await Promise.all([
       sb.from('stock_locations').select('*').eq('is_active',true),
       sb.from('v_stock_status').select('*'),
       sb.from('ingredients').select('id,name,base_unit,ingredient_group,cost_per_unit').eq('is_active',true).order('name'),
@@ -265,14 +267,15 @@ async function reloadAll(){
       sb.from('v_stock_todo').select('*'),
       sb.from('v_branch_monthly').select('*').not('month','is',null).order('month',{ascending:false}).limit(12),
       sb.from('staff_roles').select('*').order('sort_order'),
-      sb.from('v_staff').select('*').order('role_order').order('full_name')
+      sb.from('v_staff').select('*').order('role_order').order('full_name'),
+      sb.from('promotions').select('*').order('is_active',{ascending:false}).order('name')
     ]);
     const bad=[locs,stock,ing,tr,po,ct,mv,todo,mon].find(r=>r.error);
     if(bad) throw bad.error;
     S.locs=locs.data||[]; S.stock=stock.data||[]; S.ing=ing.data||[];
     S.reqs=tr.data||[]; S.pos=po.data||[]; S.counts=ct.data||[];
     S.loss=mv.data||[]; S.todo=todo.data||[]; S.monthly=mon.data||[];
-    S.roles=rl.data||[]; S.team=tm.data||[];
+    S.roles=rl.data||[]; S.team=tm.data||[]; S.promos=pm.data||[];
     setConn(true,'ต่อฐานข้อมูลแล้ว');
     renderAll();
   }catch(e){
@@ -291,6 +294,7 @@ async function rpc(fn,args){
 // ================= แท็บ =================
 const TABS=[{k:'home',n:'🏠 ภาพรวม'},{k:'stock',n:'📊 ของในร้าน'},{k:'req',n:'📋 ใบเบิก'},
             {k:'po',n:'🛒 สั่งซื้อ'},{k:'count',n:'🔢 นับสต็อก'},{k:'loss',n:'💔 ของหาย'},
+            {k:'promo',n:'🎁 โปรโมชั่น', boss:true},
             {k:'team',n:'👥 จัดการสมาชิก', boss:true}];
 function rTabs(){
   if(!S.me) return;
@@ -302,6 +306,7 @@ function rTabs(){
     let n=0;
     if(t.k==='stock')n=alerts; if(t.k==='req')n=myReq; if(t.k==='po')n=myPo;
     if(t.k==='team')n=S.team.filter(x=>x.is_active&&!x.has_login).length;
+    if(t.k==='promo')n=(S.promos||[]).filter(p=>p.is_active&&!p.is_staff_perk).length;
     return `<button class="${t.k===S.tab?'on':''}" onclick="go('${t.k}')">${t.n}${n?`<span class="n">${n}</span>`:''}</button>`;
   }).join('');
 }
@@ -309,7 +314,7 @@ function go(k){S.tab=k;TABS.forEach(t=>$('p_'+t.k).classList.toggle('on',t.k===k
 function renderAll(){ if(!S.me) return;
   $('topTag').textContent = readOnly()?'โหมดดูอย่างเดียว':canTeam()?'ผู้จัดการ':'หน้าร้าน';
   $('meta').textContent = `${S.branch?S.branch.name:'—'} · ${S.me.full_name} (${roleTh(S.me.role)})`;
-  rTabs();rHome();rStock();rReq();rPo();rCount();rLoss();rTeam(); }
+  rTabs();rHome();rStock();rReq();rPo();rCount();rLoss();rPromo();rTeam(); }
 
 // ================= 1. ภาพรวม =================
 function rHome(){
@@ -1157,6 +1162,142 @@ async function changePw(){
   btn.disabled=false;btn.textContent='เปลี่ยนรหัสผ่าน';
   if(error)return toast(error.message,'err');
   closeM();toast('เปลี่ยนรหัสผ่านเรียบร้อย ✅');
+}
+
+
+// ================= 🎁 โปรโมชั่น =================
+const promoDesc = p => p.promo_type==='percent'
+  ? 'ลด '+Number(p.value)+'%'+(p.max_discount?' (สูงสุด '+fmt(p.max_discount)+' ₭)':'')
+  : 'ลด '+fmt(p.value)+' ₭';
+const promoWhen = p => (!p.start_date && !p.end_date) ? 'ไม่จำกัดเวลา'
+  : (p.start_date?ymdOnly(p.start_date):'—') + ' → ' + (p.end_date?ymdOnly(p.end_date):'ไม่มีวันจบ');
+const ymdOnly = d => new Date(d).toLocaleDateString('th-TH',{day:'2-digit',month:'short',year:'2-digit'});
+function promoLive(p){
+  if(!p.is_active) return {k:'off', t:'ปิดอยู่'};
+  const t=new Date().toISOString().slice(0,10);
+  if(p.start_date && p.start_date > t) return {k:'wait', t:'ยังไม่ถึงวันเริ่ม'};
+  if(p.end_date   && p.end_date   < t) return {k:'exp',  t:'หมดอายุแล้ว'};
+  return {k:'on', t:'ใช้งานอยู่'};
+}
+
+function rPromo(){
+  if(!canTeam()){ $('p_promo').innerHTML=''; return; }
+  const all=(S.promos||[]);
+  const shop=all.filter(p=>!p.is_staff_perk), perk=all.filter(p=>p.is_staff_perk);
+  const live=shop.filter(p=>promoLive(p).k==='on').length;
+
+  const row = p => {
+    const st=promoLive(p);
+    return `<tr class="${p.is_active?'':'dim'}">
+      <td><b>${p.name}</b><div style="font-size:10.5px;color:var(--muted)">${promoWhen(p)}</div></td>
+      <td>${promoDesc(p)}</td>
+      <td class="num">${Number(p.min_total||0)?fmt(p.min_total)+' ₭':'—'}</td>
+      <td><span class="pill ${st.k==='on'?'p-ok':st.k==='off'?'p-mut':'p-low'}">${st.t}</span></td>
+      <td class="num" style="white-space:nowrap">
+        <button class="btn sm sec" onclick="openPromo('${p.id}')">แก้ไข</button>
+        <button class="btn sm ${p.is_active?'dan':''}" onclick="togglePromo('${p.id}',${!p.is_active})">
+          ${p.is_active?'ปิด':'เปิด'}</button></td></tr>`;};
+
+  $('p_promo').innerHTML=`
+    <h2>โปรโมชั่น / ส่วนลด</h2>
+    <div class="sub">เปิด-ปิดได้ทันที · ปิดแล้วหน้าขายจะไม่เห็นโปรฯ นั้นอีก · ทุกส่วนลดที่หน้าร้านต้องมีรหัสอนุมัติเสมอ</div>
+    <div class="kpis">
+      <div class="kpi green"><div class="l">ใช้งานอยู่ตอนนี้</div><div class="v">${live}</div>
+        <div class="x">หน้าขายเห็นเท่านี้</div></div>
+      <div class="kpi"><div class="l">ทั้งหมด</div><div class="v">${shop.length}</div></div>
+      <div class="kpi"><div class="l">สิทธิ์พนักงาน</div><div class="v">${perk.length}</div>
+        <div class="x">ยังไม่เปิดใช้ในหน้าขาย</div></div>
+    </div>
+
+    <div class="card"><h3><span>โปรโมชั่นร้าน (${shop.length})</span>
+      <button class="btn sm" onclick="openPromo()">+ เพิ่มโปรโมชั่น</button></h3>
+      ${shop.length?`<div class="scroll"><table><thead><tr>
+        <th>ชื่อ</th><th>ลดเท่าไหร่</th><th class="num">ยอดขั้นต่ำ</th><th>สถานะ</th><th></th>
+        </tr></thead><tbody>${shop.map(row).join('')}</tbody></table></div>`
+       :`<div class="empty">ยังไม่มีโปรโมชั่น — กด "เพิ่มโปรโมชั่น" เพื่อสร้างอันแรก</div>`}
+    </div>
+
+    ${perk.length?`<div class="card"><h3><span>สิทธิ์พนักงาน (${perk.length})</span></h3>
+      <div class="note info" style="margin-top:0">ตั้งไว้ล่วงหน้าแล้ว แต่<b>ยังไม่เปิดใช้ในหน้าขาย</b>
+        เพราะต้องผูกกับระบบนับโควตาเครื่องดื่มพนักงานก่อน — จะทำในรอบถัดไป</div>
+      <div class="scroll"><table><tbody>${perk.map(p=>`<tr class="dim">
+        <td><b>${p.name}</b></td><td>${promoDesc(p)}</td></tr>`).join('')}</tbody></table></div></div>`:''}`;
+}
+
+function openPromo(id){
+  const p = id ? (S.promos||[]).find(x=>x.id===id) : null;
+  openM(`<h3>${p?'✏️ แก้ไขโปรโมชั่น':'➕ เพิ่มโปรโมชั่น'}</h3>
+    <div class="fld"><label>ชื่อโปรโมชั่น * <span style="color:var(--muted)">(พนักงานจะเห็นชื่อนี้ตอนเลือก)</span></label>
+      <input id="pm_name" value="${p?String(p.name).replace(/"/g,'&quot;'):''}" placeholder="เช่น ลดวันเกิด 15%"></div>
+    <div class="row2">
+      <div class="fld"><label>ลดแบบไหน *</label>
+        <select id="pm_type" onchange="promoPrev()">
+          <option value="percent" ${!p||p.promo_type==='percent'?'selected':''}>ลดเป็นเปอร์เซ็นต์ (%)</option>
+          <option value="amount"  ${p&&p.promo_type==='amount'?'selected':''}>ลดเป็นจำนวนเงิน (₭)</option>
+        </select></div>
+      <div class="fld"><label>ลดเท่าไหร่ *</label>
+        <input id="pm_val" type="number" inputmode="decimal" oninput="promoPrev()"
+               value="${p?Number(p.value):''}" placeholder="เช่น 10"></div></div>
+    <div class="row2">
+      <div class="fld"><label>ยอดขั้นต่ำ (₭)</label>
+        <input id="pm_min" type="number" inputmode="numeric" oninput="promoPrev()"
+               value="${p&&Number(p.min_total)?Number(p.min_total):''}" placeholder="0 = ไม่กำหนด"></div>
+      <div class="fld"><label>ลดได้สูงสุด (₭)</label>
+        <input id="pm_max" type="number" inputmode="numeric" oninput="promoPrev()"
+               value="${p&&p.max_discount?Number(p.max_discount):''}" placeholder="เว้นว่าง = ไม่จำกัด"></div></div>
+    <div class="row2">
+      <div class="fld"><label>เริ่มวันที่</label>
+        <input id="pm_s" type="date" value="${p&&p.start_date?p.start_date:''}"></div>
+      <div class="fld"><label>ถึงวันที่</label>
+        <input id="pm_e" type="date" value="${p&&p.end_date?p.end_date:''}"></div></div>
+    <div class="fld"><label>สถานะ</label>
+      <select id="pm_act">
+        <option value="1" ${!p||p.is_active?'selected':''}>เปิดใช้งาน — หน้าขายเห็นทันที</option>
+        <option value="0" ${p&&!p.is_active?'selected':''}>ปิดไว้ก่อน</option>
+      </select></div>
+    <div id="pm_prev"></div>
+    <div id="pm_err"></div>
+    <div class="macts"><button class="btn sec" onclick="closeM()">ยกเลิก</button>
+      <button class="btn" id="pm_btn" onclick="savePromo(${p?`'${p.id}'`:'null'})">บันทึก</button></div>`);
+  promoPrev();
+}
+
+function promoPrev(){
+  const t=$('pm_type').value, v=Number($('pm_val').value||0);
+  const mn=Number($('pm_min').value||0), mx=Number($('pm_max').value||0);
+  if(!v) return $('pm_prev').innerHTML='';
+  const ex=[60000,120000].map(sub=>{
+    if(mn && sub<mn) return `บิล ${fmt(sub)} ₭ → <b>ใช้ไม่ได้</b> (ยอดไม่ถึงขั้นต่ำ)`;
+    let d = t==='percent' ? sub*v/100 : v;
+    if(mx) d=Math.min(d,mx);
+    d=Math.round(Math.min(d,sub));
+    return `บิล ${fmt(sub)} ₭ → ลด <b>${fmt(d)} ₭</b> → จ่าย <b>${fmt(sub-d)} ₭</b>`;
+  }).join('<br>');
+  $('pm_prev').innerHTML=`<div class="note" style="margin-top:4px"><b>ลองคำนวณให้ดู</b><br>${ex}</div>`;
+}
+
+async function savePromo(id){
+  const err=m=>$('pm_err').innerHTML='<div class="note warn" style="margin-top:6px">'+m+'</div>';
+  const name=$('pm_name').value.trim(), type=$('pm_type').value, val=Number($('pm_val').value||0);
+  if(!name) return err('ต้องใส่ชื่อโปรโมชั่น');
+  if(!val||val<=0) return err('ต้องใส่ตัวเลขส่วนลดมากกว่า 0');
+  if(type==='percent'&&val>100) return err('ลดเป็นเปอร์เซ็นต์ เกิน 100% ไม่ได้');
+  $('pm_btn').disabled=true; $('pm_btn').textContent='กำลังบันทึก...';
+  try{
+    const r=await rpc('promo_save',{
+      p_id:id, p_name:name, p_promo_type:type, p_value:val,
+      p_min_total:Number($('pm_min').value||0),
+      p_max_discount:$('pm_max').value?Number($('pm_max').value):null,
+      p_start_date:$('pm_s').value||null, p_end_date:$('pm_e').value||null,
+      p_is_active:$('pm_act').value==='1', p_branch_id:null });
+    closeM(); toast(r.message||'บันทึกแล้ว'); await reloadAll();
+  }catch(e){ $('pm_btn').disabled=false; $('pm_btn').textContent='บันทึก'; err(e.message||e); }
+}
+
+async function togglePromo(id,on){
+  try{ const r=await rpc('promo_toggle',{p_id:id,p_active:on});
+       toast(r.message||'เรียบร้อย', on?'':'warn'); await reloadAll(); }
+  catch(e){ toast(e.message||e,'err'); }
 }
 
 go('home');
