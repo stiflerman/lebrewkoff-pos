@@ -983,12 +983,13 @@ function rTeam(){
           ${S.showLeft?'← ดูคนที่ทำงานอยู่':`ดูคนที่ออกแล้ว (${left})`}</button>
         <button class="btn sm" onclick="openAddStaff()">+ เพิ่มสมาชิก</button></span></h3>
       ${list.length?`<div class="scroll"><table><thead><tr>
-        <th>ชื่อ</th><th>ตำแหน่ง</th><th>สถานะ</th><th>เข้าใช้ล่าสุด</th><th></th>
+        <th>ชื่อ</th><th>ตำแหน่ง</th><th>รหัสอนุมัติ</th><th>สถานะ</th><th>เข้าใช้ล่าสุด</th><th></th>
         </tr></thead><tbody>${list.map(t=>`<tr>
           <td><b>${t.full_name}</b>${t.nickname?` <span style="color:var(--muted)">(${t.nickname})</span>`:''}
             <div style="font-size:10px;color:var(--muted)">${t.login_email||'—'}${t.phone?' · '+t.phone:''}</div></td>
           <td><span class="pill ${t.read_only?'p-info':t.can_manage_staff?'p-low':'p-mut'}">${t.role_th}</span>
             ${t.branch_name&&!t.all_branches?`<div style="font-size:10px;color:var(--muted)">${t.branch_name}</div>`:''}</td>
+          <td>${pinCell(t)}</td>
           <td style="font-size:11px">${t.status_th}</td>
           <td style="font-size:10.5px;color:var(--muted)">${t.last_sign_in_at?ymd(t.last_sign_in_at):'—'}</td>
           <td class="num" style="white-space:nowrap">
@@ -1069,6 +1070,31 @@ async function doAddStaff(){
   }catch(e){b.disabled=false;b.textContent='สร้างบัญชี';
     $('ns_err').innerHTML=`<div class="err">${e.message}</div>`;}
 }
+
+// ---- รหัสอนุมัติ (เห็นเฉพาะคนที่จัดการสมาชิกได้) ----
+function pinCell(t){
+  if(!t.approve_pin) return '<span style="color:var(--muted)">—</span>';
+  const shown = !!(S.showPin||{})[t.id];
+  return `<span style="font-family:ui-monospace,monospace;font-size:12.5px;letter-spacing:1px">
+      ${shown?t.approve_pin:'••••'}</span>
+    <button class="btn sm sec" style="padding:2px 6px;margin-left:5px"
+      onclick="togglePin('${t.id}')" title="${shown?'ซ่อน':'ดูรหัส'}">${shown?'🙈':'👁'}</button>
+    ${t.can_approve?'<div style="font-size:9.5px;color:var(--green);margin-top:2px">อนุมัติส่วนลด/ยกเลิกบิลได้</div>'
+                   :'<div style="font-size:9.5px;color:var(--muted);margin-top:2px">ใช้อนุมัติไม่ได้</div>'}`;
+}
+function togglePin(id){ S.showPin=S.showPin||{}; S.showPin[id]=!S.showPin[id]; rTeam(); }
+
+async function doSetPin(id){
+  const v=$('pn_val').value.trim();
+  const err=m=>$('st_err').innerHTML='<div class="note warn" style="margin-top:8px">'+m+'</div>';
+  if(!/^\d{4}$/.test(v)) return err('รหัสอนุมัติต้องเป็นตัวเลข 4 หลัก');
+  const b=$('pn_btn'); b.disabled=true; b.innerHTML='<span class="spin"></span> กำลังบันทึก...';
+  try{
+    const r=await rpc('staff_update',{p_staff_id:id,p_approve_pin:v});
+    closeM(); toast(r.message||'ตั้งรหัสอนุมัติใหม่แล้ว'); await reloadAll();
+  }catch(e){ b.disabled=false; b.textContent='บันทึกรหัสอนุมัติ'; err(e.message||e); }
+}
+
 function openStaff(id){
   const t=S.team.find(x=>x.id===id); if(!t)return;
   const meAll=myRole().all_branches;
@@ -1095,7 +1121,22 @@ function openStaff(id){
     ${!locked?`
     <div class="fld" style="margin-top:14px"><label>ตั้งรหัสผ่านใหม่ให้ (กรณีลืมรหัส)</label>
       <input id="rs_pw" type="text" placeholder="รหัสใหม่ อย่างน้อย 8 ตัว"></div>
-    <button class="btn sec wide" id="rs_btn" onclick="doResetPw('${t.id}')">ตั้งรหัสใหม่</button>`:''}
+    <button class="btn sec wide" id="rs_btn" onclick="doResetPw('${t.id}')">ตั้งรหัสใหม่</button>
+
+    <div class="fld" style="margin-top:14px"><label>รหัสอนุมัติ 4 หลัก
+      <span style="color:var(--muted)">(คนละตัวกับรหัสผ่าน · ใช้ตอนอนุมัติส่วนลด/ยกเลิกบิล/ปิดรอบนับ)</span></label>
+      <div style="display:flex;gap:7px;align-items:center">
+        <span style="font-family:ui-monospace,monospace;font-size:15px;letter-spacing:2px;color:var(--gold2)"
+              id="pn_now">${t.approve_pin?'••••':'ยังไม่มี'}</span>
+        ${t.approve_pin?`<button class="btn sm sec" onclick="
+          document.getElementById('pn_now').textContent=
+            document.getElementById('pn_now').textContent==='••••'?'${t.approve_pin}':'••••'">👁 ดู/ซ่อน</button>`:''}
+      </div>
+      <input id="pn_val" maxlength="4" inputmode="numeric" placeholder="ใส่รหัสใหม่ 4 หลัก" style="margin-top:7px"></div>
+    <button class="btn sec wide" id="pn_btn" onclick="doSetPin('${t.id}')">บันทึกรหัสอนุมัติ</button>
+    <div style="font-size:10.5px;color:var(--muted);margin-top:5px;text-align:center">
+      ${t.can_approve?'ตำแหน่งนี้<b style="color:var(--green)">อนุมัติได้</b>':'ตำแหน่งนี้<b>ใช้อนุมัติไม่ได้</b> ถึงมีรหัสก็ตาม'}
+    </div>`:''}
 
     ${(!locked&&!isMe)?`<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
       ${t.is_active
