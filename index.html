@@ -52,6 +52,13 @@ var supabase=(()=>{var Ls=Object.create;var qe=Object.defineProperty;var Us=Obje
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px;margin-bottom:11px}
   .card h3{font-size:13px;color:var(--gold2);margin-bottom:8px;display:flex;
     justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+    .thumb{width:40px;height:40px;border-radius:8px;object-fit:cover;background:var(--card2);
+    display:flex;align-items:center;justify-content:center;font-size:19px;flex:0 0 auto}
+  .imgpick{border:1.5px dashed var(--line);border-radius:12px;min-height:132px;display:flex;
+    align-items:center;justify-content:center;cursor:pointer;overflow:hidden;background:var(--card2)}
+  .imgpick img{width:100%;height:100%;object-fit:cover}
+  .imgph{text-align:center;color:var(--muted);font-size:11.5px;line-height:1.7}
+  .imgph b{display:block;font-size:30px;font-weight:400}
   .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:9px;margin-bottom:12px}
   .kpi{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:11px 13px}
   .kpi .l{font-size:10.5px;color:var(--muted)}
@@ -173,6 +180,7 @@ var supabase=(()=>{var Ls=Object.create;var qe=Object.defineProperty;var Us=Obje
     <div class="pane" id="p_po"></div>
     <div class="pane" id="p_count"></div>
     <div class="pane" id="p_loss"></div>
+    <div class="pane" id="p_menu"></div>
     <div class="pane" id="p_promo"></div>
     <div class="pane" id="p_team"></div>
   </div>
@@ -192,6 +200,9 @@ try{ sb = window.supabase.createClient(SUPA_URL, SUPA_KEY); }catch(e){}
 
 const $=i=>document.getElementById(i);
 const fmt=n=>Math.round(Number(n)||0).toLocaleString();
+// กันข้อความจากฐานข้อมูลทำ HTML พัง (ชื่อเมนูที่มี ' " < > เช่น O'Clock Latte)
+const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt2=n=>(Math.round((Number(n)||0)*100)/100).toLocaleString();
 const ymd=d=>new Date(d).toLocaleString('th-TH',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
 let tt;function toast(m,k){const t=$('toast');t.textContent=m;t.className='toast on'+(k?' '+k:'');
@@ -204,13 +215,17 @@ function setConn(ok,txt){const c=$('conn');c.className='conn '+(ok?'ok':'bad');$
 // สถานะรวมของแอป
 const S={me:null, branch:null, locs:[], stock:[], ing:[], reqs:[], pos:[], counts:[],
          loss:[], todo:[], monthly:[], team:[], roles:[], showLeft:false,
-         loc:'front', tab:'home', curCount:null, draft:[]};
+         loc:'front', tab:'home', curCount:null, draft:[],
+         menu:[], cats:[], recipeCount:{}, sizeCount:{}, menuCat:'all', menuQ:''};
 // สิทธิ์อ่านจากตาราง staff_roles ในฐานข้อมูล ไม่ได้ฝังไว้ในหน้าจอ
 const myRole   =()=>S.roles.find(r=>r.code===S.me?.role)||{};
 const isBoss   =()=>!!myRole().can_approve;
 const isWh     =()=>!!myRole().can_purchase;
 const canTeam  =()=>!!myRole().can_manage_staff;
 const readOnly =()=>!!myRole().read_only;
+// เฉพาะเจ้าของ/สำนักงานใหญ่ — ต้องตรงกับ is_hq() ในฐานข้อมูลเป๊ะ
+// ห้ามใช้ all_branches เพราะตำแหน่งหุ้นส่วน (investor) ก็มีธงนั้น แล้วจะเห็นปุ่มที่กดแล้วพัง
+const isHQ     =()=>['owner','hq_admin'].includes(S.me&&S.me.role);
 const roleTh   =r=>(S.roles.find(x=>x.code===r)||{}).name_th||r;
 // ตำแหน่งระดับสูง — เฉพาะเจ้าของเท่านั้นที่ตั้ง/แก้ได้ (ผู้จัดการแก้ไม่ได้)
 const SENIOR   =['owner','hq_admin','investor','manager','assistant_manager'];
@@ -263,7 +278,7 @@ async function doLogout(){ await sb.auth.signOut(); location.reload(); }
 async function reloadAll(){
   setConn(true,'กำลังโหลด…');
   try{
-    const [locs,stock,ing,tr,po,ct,mv,todo,mon,rl,tm,pm]=await Promise.all([
+    const [locs,stock,ing,tr,po,ct,mv,todo,mon,rl,tm,pm,mn,cs,rc,sz]=await Promise.all([
       sb.from('stock_locations').select('*').eq('is_active',true),
       sb.from('v_stock_status').select('*'),
       sb.from('ingredients').select('id,name,base_unit,ingredient_group,cost_per_unit').eq('is_active',true).order('name'),
@@ -276,7 +291,11 @@ async function reloadAll(){
       sb.from('v_branch_monthly').select('*').not('month','is',null).order('month',{ascending:false}).limit(12),
       sb.from('staff_roles').select('*').order('sort_order'),
       sb.from('v_staff').select('*').order('role_order').order('full_name'),
-      sb.from('promotions').select('*').order('is_active',{ascending:false}).order('name')
+      sb.from('promotions').select('*').order('is_active',{ascending:false}).order('name'),
+      sb.from('v_menu').select('*').order('category_order').order('sort_order').order('name'),
+      sb.from('product_categories').select('*').order('sort_order'),
+      sb.from('recipes').select('product_id'),
+      sb.from('size_recipe_items').select('product_sizes!inner(product_id)')
     ]);
     const bad=[locs,stock,ing,tr,po,ct,mv,todo,mon].find(r=>r.error);
     if(bad) throw bad.error;
@@ -284,6 +303,10 @@ async function reloadAll(){
     S.reqs=tr.data||[]; S.pos=po.data||[]; S.counts=ct.data||[];
     S.loss=mv.data||[]; S.todo=todo.data||[]; S.monthly=mon.data||[];
     S.roles=rl.data||[]; S.team=tm.data||[]; S.promos=pm.data||[];
+    S.menu=mn.data||[]; S.cats=cs.data||[];
+    S.recipeCount=(rc.data||[]).reduce((a,r)=>(a[r.product_id]=(a[r.product_id]||0)+1,a),{});
+    S.sizeCount=(sz.data||[]).reduce((a,r)=>{const pid=r.product_sizes&&r.product_sizes.product_id;
+      if(pid)a[pid]=(a[pid]||0)+1; return a;},{});
     setConn(true,'ต่อฐานข้อมูลแล้ว');
     renderAll();
   }catch(e){
@@ -302,6 +325,7 @@ async function rpc(fn,args){
 // ================= แท็บ =================
 const TABS=[{k:'home',n:'🏠 ภาพรวม'},{k:'stock',n:'📊 ของในร้าน'},{k:'req',n:'📋 ใบเบิก'},
             {k:'po',n:'🛒 สั่งซื้อ'},{k:'count',n:'🔢 นับสต็อก'},{k:'loss',n:'💔 ของหาย'},
+            {k:'menu',n:'🍽️ เมนู', hq:true},
             {k:'promo',n:'🎁 โปรโมชั่น', boss:true},
             {k:'team',n:'👥 จัดการสมาชิก', boss:true}];
 function rTabs(){
@@ -310,11 +334,12 @@ function rTabs(){
   const myReq = isWh() ? S.reqs.filter(r=>r.status==='requested').length
                        : S.reqs.filter(r=>r.status==='issued').length;
   const myPo  = isWh() ? S.pos.filter(p=>p.status==='ordered').length : 0;
-  $('tabs').innerHTML=TABS.filter(t=>!t.boss||canTeam()).map(t=>{
+  $('tabs').innerHTML=TABS.filter(t=>(!t.boss||canTeam())&&(!t.hq||isHQ())).map(t=>{
     let n=0;
     if(t.k==='stock')n=alerts; if(t.k==='req')n=myReq; if(t.k==='po')n=myPo;
     if(t.k==='team')n=S.team.filter(x=>x.is_active&&!x.has_login).length;
     if(t.k==='promo')n=(S.promos||[]).filter(p=>p.is_active&&!p.is_staff_perk).length;
+    if(t.k==='menu')n=noRecipeCount();
     return `<button class="${t.k===S.tab?'on':''}" onclick="go('${t.k}')">${t.n}${n?`<span class="n">${n}</span>`:''}</button>`;
   }).join('');
 }
@@ -322,7 +347,7 @@ function go(k){S.tab=k;TABS.forEach(t=>$('p_'+t.k).classList.toggle('on',t.k===k
 function renderAll(){ if(!S.me) return;
   $('topTag').textContent = readOnly()?'โหมดดูอย่างเดียว':canTeam()?'ผู้จัดการ':'หน้าร้าน';
   $('meta').textContent = `${S.branch?S.branch.name:'—'} · ${S.me.full_name} (${roleTh(S.me.role)})`;
-  rTabs();rHome();rStock();rReq();rPo();rCount();rLoss();rPromo();rTeam(); }
+  rTabs();rHome();rStock();rReq();rPo();rCount();rLoss();rMenu();rPromo();rTeam(); }
 
 // ================= 1. ภาพรวม =================
 function rHome(){
@@ -1394,6 +1419,356 @@ async function togglePromo(id,on){
 
 go('home');
 boot();
+
+
+// ================= 🍽️ จัดการเมนู (เห็นเฉพาะเจ้าของ/สำนักงานใหญ่) =================
+
+const SERVES = [
+  { k:'hot',    n:'ร้อน',        i:'☕' },
+  { k:'ice',    n:'เย็น',        i:'🧊' },
+  { k:'frappe', n:'ปั่น',        i:'🥤' },
+  { k:'shot',   n:'ช็อต / เพิ่ม', i:'⚡' },
+  { k:'other',  n:'อื่นๆ',       i:'🍰' },
+];
+const serveOf  = st => SERVES.find(s=>s.k===st) || SERVES[4];
+const catOfRow = r  => (S.cats||[]).find(c=>c.code===r.category_code) || {};
+
+// ป้ายบอกว่าขายแล้วตัดอะไรบ้าง
+function recipeState(r){
+  if((S.recipeCount||{})[r.id])      return { t:'มีสูตร',          c:'p-ok'   };
+  if(!catOfRow(r).requires_recipe)   return { t:'ซื้อมาขาย',       c:'p-info' };
+  if((S.sizeCount||{})[r.id])        return { t:'ตัดแก้วเท่านั้น', c:'p-low'  };
+  return { t:'ยังไม่มีสูตร', c:'p-low' };
+}
+// นับเมนูที่อยู่ในหมวดที่ต้องมีสูตร แต่ยังไม่มีสูตรเครื่องดื่ม
+const noRecipeCount = () => (S.menu||[]).filter(r =>
+  r.is_active && catOfRow(r).requires_recipe && !(S.recipeCount||{})[r.id]).length;
+
+function rMenu(){
+  if(!isHQ()){ $('p_menu').innerHTML=''; return; }
+  const all = S.menu||[];
+  const q   = (S.menuQ||'').trim().toLowerCase();
+  const list = all.filter(r =>
+    (S.menuCat==='all' || !S.menuCat || r.category_code===S.menuCat) &&
+    (!q || (r.name||'').toLowerCase().includes(q) || (r.name_lo||'').toLowerCase().includes(q)));
+
+  const onSale = all.filter(r=>r.is_active).length;
+  const hidden = all.length - onSale;
+  const noRec  = noRecipeCount();
+  const noImg  = all.filter(r=>r.is_active && !r.image_url).length;
+
+  const row = r => {
+    const st = recipeState(r), sv = serveOf(r.serve_type), c = catOfRow(r);
+    return `<tr class="${r.is_active?'':'dim'}">
+      <td>${r.image_url
+            ? `<img class="thumb" src="${esc(r.image_url)}" alt="">`
+            : `<div class="thumb">${sv.i}</div>`}</td>
+      <td><b>${esc(r.name)}</b>
+        ${r.name_lo?`<div style="font-size:10px;color:var(--muted)">${esc(r.name_lo)}</div>`:''}
+        <div style="font-size:9.5px;color:var(--muted)">${sv.i} ${sv.n} · SKU ${esc(r.sku||'—')}</div></td>
+      <td><span class="pill p-mut">${esc(c.name||r.category_name||'—')}</span></td>
+      <td class="num">${fmt(r.base_price)}</td>
+      <td><span class="pill ${st.c}">${st.t}</span></td>
+      <td><span class="pill ${r.is_active?'p-ok':'p-mut'}">${r.is_active?'ขายอยู่':'ซ่อน'}</span></td>
+      <td class="num" style="white-space:nowrap">
+        <button class="btn sm sec" onclick="openMenu('${r.id}')">แก้ไข</button>
+        <button class="btn sm ${r.is_active?'':'grn'}" onclick="toggleMenu('${r.id}',${!r.is_active})">
+          ${r.is_active?'ซ่อน':'เปิด'}</button>
+        <button class="btn sm dan" onclick="askDelMenu('${r.id}')">ลบ</button></td></tr>`;
+  };
+
+  $('p_menu').innerHTML = `
+    <h2>จัดการเมนู</h2>
+    <div class="sub">เพิ่มเมนูใหม่ · แก้ราคาขาย · ใส่รูป · ซ่อนเมนูที่ไม่ขายชั่วคราว · จัดการหมวด</div>
+    <div class="kpis">
+      <div class="kpi"><div class="l">เมนูทั้งหมด</div><div class="v">${all.length}</div></div>
+      <div class="kpi green"><div class="l">ขายอยู่</div><div class="v">${onSale}</div></div>
+      <div class="kpi"><div class="l">ซ่อนไว้</div><div class="v">${hidden}</div></div>
+      <div class="kpi ${noRec?'amber':''}"><div class="l">ยังไม่มีสูตรเครื่องดื่ม</div><div class="v">${noRec}</div>
+        <div class="x">ขายแล้วไม่ตัดวัตถุดิบ</div></div>
+      <div class="kpi"><div class="l">ยังไม่มีรูป</div><div class="v">${noImg}</div></div>
+    </div>
+
+    <div class="card"><h3><span>เมนู (${list.length}${list.length!==all.length?` จาก ${all.length}`:''})</span>
+      <button class="btn sm" onclick="openMenu()">+ เพิ่มเมนู</button></h3>
+      <div class="row2" style="margin-bottom:9px">
+        <div class="fld" style="margin:0"><label>ค้นหาชื่อเมนู</label>
+          <input id="mq" value="${esc(S.menuQ||'')}" placeholder="พิมพ์ชื่อเมนู"
+                 oninput="S.menuQ=this.value;rMenu();document.getElementById('mq').focus()"></div>
+        <div class="fld" style="margin:0"><label>หมวด</label>
+          <select onchange="S.menuCat=this.value;rMenu()">
+            <option value="all" ${(S.menuCat||'all')==='all'?'selected':''}>ทุกหมวด</option>
+            ${(S.cats||[]).filter(c=>c.is_active).map(c=>
+              `<option value="${esc(c.code)}" ${S.menuCat===c.code?'selected':''}>${esc(c.name)}</option>`).join('')}
+          </select></div>
+      </div>
+      ${list.length?`<div class="scroll"><table><thead><tr>
+        <th style="width:52px">รูป</th><th>ชื่อเมนู</th><th>หมวด</th><th class="num">ราคา</th>
+        <th>สูตร</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody id="menutb">${list.map(row).join('')}</tbody></table></div>`
+       :`<div class="empty">ไม่พบเมนูที่ค้นหา</div>`}
+    </div>
+    ${rCatCard()}`;
+}
+
+function rCatCard(){
+  const cs = S.cats||[];
+  const cnt = c => (S.menu||[]).filter(r=>r.category_code===c.code && r.is_active).length;
+  return `<div class="card"><h3><span>หมวดเมนู (${cs.length})</span>
+      <button class="btn sm sec" onclick="openCat()">+ เพิ่มหมวด</button></h3>
+      <div class="scroll" style="max-height:none"><table><thead><tr>
+        <th style="width:52px">ลำดับ</th><th>หมวด</th><th class="num">เมนูที่ขายอยู่</th>
+        <th>ต้องมีสูตร</th><th>สาขาเพิ่มเมนูได้</th><th>สถานะ</th><th></th></tr></thead><tbody>
+      ${cs.map(c=>`<tr class="${c.is_active?'':'dim'}">
+        <td class="num">${c.sort_order??'—'}</td>
+        <td>${c.icon?esc(c.icon)+' ':''}<b>${esc(c.name)}</b></td>
+        <td class="num">${cnt(c)}</td>
+        <td>${c.requires_recipe?'✅':'—'}</td>
+        <td>${c.allow_branch_add?'✅':'—'}</td>
+        <td><span class="pill ${c.is_active?'p-ok':'p-mut'}">${c.is_active?'เปิด':'ปิด'}</span></td>
+        <td class="num"><button class="btn sm sec" onclick="openCat('${c.id}')">แก้ไข</button></td>
+      </tr>`).join('')}
+      </tbody></table></div></div>`;
+}
+
+// ---------- กล่องเพิ่ม / แก้เมนู ----------
+function openMenu(id){
+  const r = id ? (S.menu||[]).find(x=>x.id===id) : null;
+  const cat = r ? catOfRow(r) : {};
+  const cats = (S.cats||[]).filter(c=>c.is_active);
+  S.menuImgBlob = null;                       // รูปใหม่ที่เพิ่งเลือก (ยังไม่อัป)
+  S.menuImgDrop = false;                       // กดเอารูปออกหรือยัง
+  S.menuImgOld  = r ? (r.image_url||null) : null;
+
+  openM(`<h3>${r?'✏️ แก้ไขเมนู':'➕ เพิ่มเมนูใหม่'}</h3>
+    <div class="fld" style="margin-top:10px"><label>รูปเมนู
+      <span style="color:var(--muted)">(ใส่ทีหลังได้ ไม่ใส่ก็ขายได้)</span></label>
+      <div class="imgpick" onclick="document.getElementById('mi_file').click()">
+        <div id="mi_prev" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
+          ${r&&r.image_url ? `<img src="${esc(r.image_url)}" alt="">`
+            : `<div class="imgph"><b>🖼️</b>แตะเลือกรูปจากเครื่อง<br>
+                 <span style="font-size:10px">มือถือเปิดกล้องหรือคลังรูปได้</span></div>`}
+        </div></div>
+      <input type="file" id="mi_file" accept="image/jpeg,image/png,image/webp"
+             style="display:none" onchange="pickImg(this)">
+      <div id="mi_imgact" style="margin-top:5px;text-align:right">
+        ${r&&r.image_url?`<button class="btn sm sec" onclick="clearImg()">เอารูปออก</button>`:''}</div></div>
+
+    <div class="fld"><label>ชื่อเมนู *</label>
+      <input id="mi_name" value="${r?esc(r.name):''}" placeholder="เช่น ลาเต้เย็น"></div>
+    <div class="fld"><label>ชื่อภาษาลาว <span style="color:var(--muted)">(ไม่ใส่ก็ได้)</span></label>
+      <input id="mi_lo" value="${r&&r.name_lo?esc(r.name_lo):''}" placeholder="ชื่อที่ลูกค้าลาวอ่าน"></div>
+    <div class="row2">
+      <div class="fld"><label>ราคาขาย (₭) *</label>
+        <input id="mi_price" type="number" inputmode="numeric"
+               value="${r?Number(r.base_price):''}" placeholder="เช่น 30000"></div>
+      <div class="fld"><label>หมวด *</label><select id="mi_cat">
+        ${cats.map(c=>`<option value="${esc(c.id)}" ${cat.id===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}
+      </select></div></div>
+    <div class="row2">
+      <div class="fld"><label>ประเภทเสิร์ฟ *</label><select id="mi_serve" onchange="servePrev()">
+        ${SERVES.map(s=>`<option value="${s.k}" ${(r?r.serve_type:'ice')===s.k?'selected':''}>${s.i} ${s.n}</option>`).join('')}
+      </select></div>
+      <div class="fld"><label>ลำดับที่แสดง <span style="color:var(--muted)">(ว่างได้)</span></label>
+        <input id="mi_sort" type="number" inputmode="numeric" value="${r&&r.sort_order!=null?r.sort_order:''}"></div></div>
+    <div id="mi_svhint"></div>
+    <div class="fld"><label>คำอธิบาย <span style="color:var(--muted)">(ไม่ใส่ก็ได้)</span></label>
+      <input id="mi_desc" value="${r&&r.description?esc(r.description):''}"></div>
+    <div id="mi_err"></div>
+    <div class="macts"><button class="btn sec" onclick="closeM()">ยกเลิก</button>
+      <button class="btn" id="mi_btn" onclick="saveMenu(${r?`'${r.id}'`:'null'})">
+        ${r?'บันทึก':'เพิ่มเมนู'}</button></div>`);
+  servePrev();
+}
+
+function servePrev(){
+  const k = ($('mi_serve')||{}).value;
+  $('mi_svhint').innerHTML = k==='hot'
+    ? `<div class="note" style="margin-top:0">เมนูร้อน — ระบบจะสร้าง<b>ตัวเลือกขนาด 8 oz / 12 oz</b>
+         กับชุดแก้ว-ฝา-หลอด-น้ำตาลให้เอง โดยลอกจากเมนูร้อนตัวอื่น
+         (กินที่ร้านจะไม่ตัดแก้วกับฝา)</div>`
+    : '';
+}
+
+// ---------- รูป ----------
+async function shrinkImg(file){
+  let bm;
+  try { bm = await createImageBitmap(file); }
+  catch(e){ throw new Error('ไฟล์นี้เปิดไม่ได้ — ลองใช้รูป JPG หรือ PNG'); }
+  const MAX = 800;
+  const sc = Math.min(1, MAX / Math.max(bm.width, bm.height));
+  const w = Math.max(1, Math.round(bm.width * sc)), h = Math.max(1, Math.round(bm.height * sc));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(bm, 0, 0, w, h);
+  if (bm.close) bm.close();
+  const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.8));
+  if (!blob) throw new Error('ย่อรูปไม่สำเร็จ — ลองใช้รูปอื่น');
+  return blob;
+}
+
+async function pickImg(input){
+  const f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  try {
+    const blob = await shrinkImg(f);
+    S.menuImgBlob = blob; S.menuImgDrop = false;
+    $('mi_prev').innerHTML = `<img src="${URL.createObjectURL(blob)}" alt="">`;
+    $('mi_imgact').innerHTML = `<button class="btn sm sec" onclick="clearImg()">เอารูปออก</button>`;
+    $('mi_err').innerHTML = '';
+  } catch(e){
+    $('mi_err').innerHTML = `<div class="note warn" style="margin-top:6px">${esc(e.message||e)}</div>`;
+  }
+}
+
+function clearImg(){
+  S.menuImgBlob = null; S.menuImgDrop = true;
+  $('mi_prev').innerHTML = `<div class="imgph"><b>🖼️</b>แตะเลือกรูปจากเครื่อง</div>`;
+  $('mi_imgact').innerHTML = '';
+}
+
+async function uploadImg(productId, blob){
+  const key = productId + '.jpg';
+  const { error } = await sb.storage.from('menu-images')
+    .upload(key, blob, { upsert:true, contentType:'image/jpeg' });
+  if (error) throw new Error('อัปรูปขึ้นระบบไม่สำเร็จ: ' + (error.message||error));
+  const base = sb.storage.from('menu-images').getPublicUrl(key).data.publicUrl;
+  return base + '?v=' + Date.now();     // กันเบราว์เซอร์จำรูปเก่าไว้
+}
+
+async function saveMenu(id){
+  const err = m => $('mi_err').innerHTML =
+    `<div class="note warn" style="margin-top:6px">${esc(m)}</div>`;
+  const name  = ($('mi_name').value||'').trim();
+  const price = Number($('mi_price').value);
+  if (!name) return err('ต้องใส่ชื่อเมนู');
+  if (!price || price <= 0) return err('ราคาขายต้องมากกว่า 0');
+  if (price !== Math.round(price)) return err('ราคาต้องเป็นจำนวนเต็ม ไม่มีเศษสตางค์');
+
+  const b = $('mi_btn');
+  b.disabled = true; b.innerHTML = '<span class="spin"></span> กำลังบันทึก...';
+  let imgWarn = null, res;
+  try {
+    res = await rpc('product_save', {
+      p_id: id, p_name: name,
+      p_name_lo: ($('mi_lo').value||'').trim() || null,
+      p_price: price,
+      p_category_id: $('mi_cat').value,
+      p_serve_type: $('mi_serve').value,
+      p_sort_order: $('mi_sort').value === '' ? null : Number($('mi_sort').value),
+      p_description: ($('mi_desc').value||'').trim() || null });
+  } catch(e){
+    b.disabled = false; b.textContent = id ? 'บันทึก' : 'เพิ่มเมนู';
+    return err(e.message || e);
+  }
+
+  const pid = res.product_id || id;
+  try {
+    if (S.menuImgBlob) {
+      const url = await uploadImg(pid, S.menuImgBlob);
+      const { data, error } = await sb.rpc('product_set_image', { p_id:pid, p_url:url });
+      if (error || (data && data.ok === false))
+        imgWarn = (data && data.message) || (error && error.message) || 'บันทึกรูปไม่สำเร็จ';
+    } else if (S.menuImgDrop && S.menuImgOld) {
+      try { await sb.storage.from('menu-images').remove([pid + '.jpg']); } catch(e){}
+      const { data, error } = await sb.rpc('product_set_image', { p_id:pid, p_url:null });
+      if (error || (data && data.ok === false))
+        imgWarn = (data && data.message) || (error && error.message) || 'เอารูปออกไม่สำเร็จ';
+    }
+  } catch(e){ imgWarn = e.message || String(e); }
+
+  closeM();
+  await reloadAll();
+  if (imgWarn) toast('บันทึกเมนูแล้ว แต่รูปยังไม่ติด — ลองใส่รูปอีกครั้งได้ (' + imgWarn + ')', 'warn');
+  else toast((res.message || 'บันทึกแล้ว') + (res.warning ? ' · ' + res.warning : ''));
+}
+
+// ---------- ซ่อน / เปิด / ลบ ----------
+async function toggleMenu(id, on){
+  try {
+    const r = await rpc('product_toggle', { p_id:id, p_active:on });
+    await reloadAll();
+    toast(r.message || 'เรียบร้อย', on ? '' : 'warn');
+  } catch(e){ toast(e.message || e, 'err'); }
+}
+
+function askDelMenu(id){
+  const r = (S.menu||[]).find(x=>x.id===id); if(!r) return;
+  openM(`<h3>🗑️ ลบเมนูถาวร?</h3>
+    <div class="note warn" style="margin-top:0">กำลังจะลบ <b>${esc(r.name)}</b>
+      (SKU ${esc(r.sku||'—')}) ออกถาวร</div>
+    <div class="note"><b>แนะนำ:</b> ถ้าแค่หยุดขายชั่วคราว ใช้ <b>"ซ่อน"</b>
+      จะเก็บประวัติยอดขายไว้ครบ · เมนูที่เคยถูกขายแล้วระบบจะไม่ยอมให้ลบ</div>
+    <div id="dm_err"></div>
+    <div class="macts"><button class="btn sec" onclick="closeM()">ยกเลิก</button>
+      <button class="btn dan" id="dm_btn" onclick="doDelMenu('${r.id}')">ลบถาวร</button></div>`);
+}
+
+async function doDelMenu(id){
+  const b = $('dm_btn');
+  if(b){ b.disabled = true; b.innerHTML = '<span class="spin"></span> กำลังลบ...'; }
+  try {
+    const r = await rpc('product_delete', { p_id:id });
+    closeM(); await reloadAll(); toast(r.message || 'ลบแล้ว', 'warn');
+  } catch(e){
+    if(b){ b.disabled = false; b.textContent = 'ลบถาวร'; }
+    $('dm_err').innerHTML = `<div class="note warn" style="margin-top:6px">${esc(e.message||e)}</div>`;
+  }
+}
+
+// ---------- หมวด ----------
+function openCat(id){
+  const c = id ? (S.cats||[]).find(x=>x.id===id) : null;
+  const n = c ? (S.menu||[]).filter(r=>r.category_code===c.code && r.is_active).length : 0;
+  openM(`<h3>${c?'✏️ แก้ไขหมวด':'➕ เพิ่มหมวดใหม่'}</h3>
+    ${c?`<div class="note" style="margin-top:0">หมวดนี้มีเมนูขายอยู่ <b>${n}</b> รายการ
+         ${n?'· ปิดหมวดไม่ได้จนกว่าจะย้ายหรือซ่อนเมนูพวกนั้นก่อน':''}</div>`:''}
+    <div class="row2" style="margin-top:10px">
+      <div class="fld"><label>ชื่อหมวด *</label>
+        <input id="ci_name" value="${c?esc(c.name):''}" placeholder="เช่น ชาผลไม้"></div>
+      <div class="fld"><label>ไอคอน</label>
+        <input id="ci_icon" maxlength="4" value="${c&&c.icon?esc(c.icon):''}" placeholder="🍹"></div></div>
+    <div class="row2">
+      <div class="fld"><label>ลำดับที่แสดง</label>
+        <input id="ci_sort" type="number" inputmode="numeric" value="${c&&c.sort_order!=null?c.sort_order:''}"></div>
+      <div class="fld"><label>สถานะ</label><select id="ci_act">
+        <option value="1" ${!c||c.is_active?'selected':''}>เปิด — หน้าขายเห็นเมนูในหมวดนี้</option>
+        <option value="0" ${c&&!c.is_active?'selected':''}>ปิด — ซ่อนทั้งหมวดจากหน้าขาย</option>
+      </select></div></div>
+    <div class="fld"><label>เมนูในหมวดนี้ต้องมีสูตรไหม</label><select id="ci_rec">
+      <option value="1" ${c&&c.requires_recipe?'selected':''}>ต้องมีสูตร — เครื่องดื่มที่ตัดวัตถุดิบ</option>
+      <option value="0" ${!c||!c.requires_recipe?'selected':''}>ไม่ต้องมีสูตร — ของซื้อมาขาย</option>
+    </select></div>
+    <div class="fld"><label>ให้สาขาเพิ่มเมนูในหมวดนี้เองได้ไหม</label><select id="ci_br">
+      <option value="0" ${!c||!c.allow_branch_add?'selected':''}>ไม่ได้ — เฉพาะส่วนกลางเพิ่ม</option>
+      <option value="1" ${c&&c.allow_branch_add?'selected':''}>ได้ — สาขาเพิ่มเมนูของตัวเองได้</option>
+    </select></div>
+    <div id="ci_err"></div>
+    <div class="macts"><button class="btn sec" onclick="closeM()">ยกเลิก</button>
+      <button class="btn" id="ci_btn" onclick="saveCat(${c?`'${c.id}'`:'null'})">
+        ${c?'บันทึก':'เพิ่มหมวด'}</button></div>`);
+}
+
+async function saveCat(id){
+  const err = m => $('ci_err').innerHTML =
+    `<div class="note warn" style="margin-top:6px">${esc(m)}</div>`;
+  const name = ($('ci_name').value||'').trim();
+  if(!name) return err('ต้องใส่ชื่อหมวด');
+  const b = $('ci_btn'); b.disabled = true; b.innerHTML = '<span class="spin"></span> กำลังบันทึก...';
+  try {
+    const r = await rpc('category_save', {
+      p_id: id, p_name: name,
+      p_icon: ($('ci_icon').value||'').trim() || null,
+      p_sort_order: $('ci_sort').value === '' ? null : Number($('ci_sort').value),
+      p_requires_recipe: $('ci_rec').value === '1',
+      p_allow_branch_add: $('ci_br').value === '1',
+      p_is_active: $('ci_act').value === '1' });
+    closeM(); await reloadAll(); toast(r.message || 'บันทึกแล้ว');
+  } catch(e){
+    b.disabled = false; b.textContent = id ? 'บันทึก' : 'เพิ่มหมวด';
+    err(e.message || e);
+  }
+}
 
 </script>
 
