@@ -278,7 +278,15 @@ async function doLogout(){ await sb.auth.signOut(); location.reload(); }
 async function reloadAll(){
   setConn(true,'กำลังโหลด…');
   try{
-    const [locs,stock,ing,tr,po,ct,mv,todo,mon,rl,tm,pm,mn,cs,rc,sz]=await Promise.all([
+    // ข้อมูลเมนูหนักราว 75 KB และใช้เฉพาะแท็บเมนู → โหลดเฉพาะเจ้าของ/สำนักงานใหญ่
+    // (reloadAll ทำงานทุกครั้งที่บันทึกอะไรก็ตาม พนักงานหน้าร้านไม่ควรต้องจ่ายค่าเน็ตนี้)
+    const menuQ = isHQ() ? [
+      sb.from('products').select('*').order('sort_order').order('name'),
+      sb.from('product_categories').select('*').order('sort_order'),
+      sb.from('recipes').select('product_id'),
+      sb.from('size_recipe_items').select('product_sizes!inner(product_id)')
+    ] : [];
+    const res=await Promise.all([
       sb.from('stock_locations').select('*').eq('is_active',true),
       sb.from('v_stock_status').select('*'),
       sb.from('ingredients').select('id,name,base_unit,ingredient_group,cost_per_unit').eq('is_active',true).order('name'),
@@ -292,20 +300,20 @@ async function reloadAll(){
       sb.from('staff_roles').select('*').order('sort_order'),
       sb.from('v_staff').select('*').order('role_order').order('full_name'),
       sb.from('promotions').select('*').order('is_active',{ascending:false}).order('name'),
-      sb.from('v_menu').select('*').order('category_order').order('sort_order').order('name'),
-      sb.from('product_categories').select('*').order('sort_order'),
-      sb.from('recipes').select('product_id'),
-      sb.from('size_recipe_items').select('product_sizes!inner(product_id)')
+      ...menuQ
     ]);
-    const bad=[locs,stock,ing,tr,po,ct,mv,todo,mon].find(r=>r.error);
+    const [locs,stock,ing,tr,po,ct,mv,todo,mon,rl,tm,pm]=res;
+    const [mn,cs,rc,sz]=res.slice(12);
+    // ตรวจทุกคำสั่ง ไม่ใช่แค่ 9 ตัวแรก — ถ้าปล่อยผ่าน หน้าจอจะโชว์ข้อมูลว่างเปล่าทั้งที่บอกว่าต่อติด
+    const bad=res.find(r=>r&&r.error);
     if(bad) throw bad.error;
     S.locs=locs.data||[]; S.stock=stock.data||[]; S.ing=ing.data||[];
     S.reqs=tr.data||[]; S.pos=po.data||[]; S.counts=ct.data||[];
     S.loss=mv.data||[]; S.todo=todo.data||[]; S.monthly=mon.data||[];
     S.roles=rl.data||[]; S.team=tm.data||[]; S.promos=pm.data||[];
-    S.menu=mn.data||[]; S.cats=cs.data||[];
-    S.recipeCount=(rc.data||[]).reduce((a,r)=>(a[r.product_id]=(a[r.product_id]||0)+1,a),{});
-    S.sizeCount=(sz.data||[]).reduce((a,r)=>{const pid=r.product_sizes&&r.product_sizes.product_id;
+    S.menu=(mn&&mn.data)||[]; S.cats=(cs&&cs.data)||[];
+    S.recipeCount=((rc&&rc.data)||[]).reduce((a,r)=>(a[r.product_id]=(a[r.product_id]||0)+1,a),{});
+    S.sizeCount=((sz&&sz.data)||[]).reduce((a,r)=>{const pid=r.product_sizes&&r.product_sizes.product_id;
       if(pid)a[pid]=(a[pid]||0)+1; return a;},{});
     setConn(true,'ต่อฐานข้อมูลแล้ว');
     renderAll();
@@ -1431,7 +1439,8 @@ const SERVES = [
   { k:'other',  n:'อื่นๆ',       i:'🍰' },
 ];
 const serveOf  = st => SERVES.find(s=>s.k===st) || SERVES[4];
-const catOfRow = r  => (S.cats||[]).find(c=>c.code===r.category_code) || {};
+// หน้าจัดการอ่านจากตาราง products ตรงๆ (ไม่ใช่ v_menu) เพื่อให้เห็นเมนูในหมวดที่ปิดไปแล้วด้วย
+const catOfRow = r  => (S.cats||[]).find(c=>c.id===r.category_id) || {};
 
 // ป้ายบอกว่าขายแล้วตัดอะไรบ้าง
 function recipeState(r){
@@ -1449,7 +1458,7 @@ function rMenu(){
   const all = S.menu||[];
   const q   = (S.menuQ||'').trim().toLowerCase();
   const list = all.filter(r =>
-    (S.menuCat==='all' || !S.menuCat || r.category_code===S.menuCat) &&
+    (S.menuCat==='all' || !S.menuCat || r.category_id===S.menuCat) &&
     (!q || (r.name||'').toLowerCase().includes(q) || (r.name_lo||'').toLowerCase().includes(q)));
 
   const onSale = all.filter(r=>r.is_active).length;
@@ -1466,7 +1475,8 @@ function rMenu(){
       <td><b>${esc(r.name)}</b>
         ${r.name_lo?`<div style="font-size:10px;color:var(--muted)">${esc(r.name_lo)}</div>`:''}
         <div style="font-size:9.5px;color:var(--muted)">${sv.i} ${sv.n} · SKU ${esc(r.sku||'—')}</div></td>
-      <td><span class="pill p-mut">${esc(c.name||r.category_name||'—')}</span></td>
+      <td><span class="pill p-mut">${esc(c.name||'(ไม่มีหมวด)')}</span>
+        ${c.id&&!c.is_active?'<div style="font-size:9.5px;color:var(--amber)">หมวดนี้ปิดอยู่ · หน้าขายไม่เห็น</div>':''}</td>
       <td class="num">${fmt(r.base_price)}</td>
       <td><span class="pill ${st.c}">${st.t}</span></td>
       <td><span class="pill ${r.is_active?'p-ok':'p-mut'}">${r.is_active?'ขายอยู่':'ซ่อน'}</span></td>
@@ -1494,12 +1504,12 @@ function rMenu(){
       <div class="row2" style="margin-bottom:9px">
         <div class="fld" style="margin:0"><label>ค้นหาชื่อเมนู</label>
           <input id="mq" value="${esc(S.menuQ||'')}" placeholder="พิมพ์ชื่อเมนู"
-                 oninput="S.menuQ=this.value;rMenu();document.getElementById('mq').focus()"></div>
+                 oninput="S.menuQ=this.value;rMenu();setTimeout(()=>{const e=$('mq');e.focus();e.setSelectionRange(e.value.length,e.value.length)},0)"></div>
         <div class="fld" style="margin:0"><label>หมวด</label>
           <select onchange="S.menuCat=this.value;rMenu()">
             <option value="all" ${(S.menuCat||'all')==='all'?'selected':''}>ทุกหมวด</option>
-            ${(S.cats||[]).filter(c=>c.is_active).map(c=>
-              `<option value="${esc(c.code)}" ${S.menuCat===c.code?'selected':''}>${esc(c.name)}</option>`).join('')}
+            ${(S.cats||[]).map(c=>
+              `<option value="${esc(c.id)}" ${S.menuCat===c.id?'selected':''}>${esc(c.name)}${c.is_active?'':' (ปิด)'}</option>`).join('')}
           </select></div>
       </div>
       ${list.length?`<div class="scroll"><table><thead><tr>
@@ -1513,7 +1523,8 @@ function rMenu(){
 
 function rCatCard(){
   const cs = S.cats||[];
-  const cnt = c => (S.menu||[]).filter(r=>r.category_code===c.code && r.is_active).length;
+  const cnt  = c => (S.menu||[]).filter(r=>r.category_id===c.id && r.is_active).length;
+  const hid  = c => (S.menu||[]).filter(r=>r.category_id===c.id && !r.is_active).length;
   return `<div class="card"><h3><span>หมวดเมนู (${cs.length})</span>
       <button class="btn sm sec" onclick="openCat()">+ เพิ่มหมวด</button></h3>
       <div class="scroll" style="max-height:none"><table><thead><tr>
@@ -1523,6 +1534,7 @@ function rCatCard(){
         <td class="num">${c.sort_order??'—'}</td>
         <td>${c.icon?esc(c.icon)+' ':''}<b>${esc(c.name)}</b></td>
         <td class="num">${cnt(c)}</td>
+        <td class="num">${hid(c)||'—'}</td>
         <td>${c.requires_recipe?'✅':'—'}</td>
         <td>${c.allow_branch_add?'✅':'—'}</td>
         <td><span class="pill ${c.is_active?'p-ok':'p-mut'}">${c.is_active?'เปิด':'ปิด'}</span></td>
@@ -1537,6 +1549,7 @@ function openMenu(id){
   const cat = r ? catOfRow(r) : {};
   const cats = (S.cats||[]).filter(c=>c.is_active);
   S.menuImgBlob = null;                       // รูปใหม่ที่เพิ่งเลือก (ยังไม่อัป)
+  S.menuImgSeq  = (S.menuImgSeq||0) + 1;      // นับรอบการเปิดกล่อง กันรูปที่ย่อเสร็จช้าไปติดเมนูผิดตัว
   S.menuImgDrop = false;                       // กดเอารูปออกหรือยัง
   S.menuImgOld  = r ? (r.image_url||null) : null;
 
@@ -1593,7 +1606,8 @@ function servePrev(){
 // ---------- รูป ----------
 async function shrinkImg(file){
   let bm;
-  try { bm = await createImageBitmap(file); }
+  // from-image = เคารพการหมุนรูปจากกล้องมือถือ ไม่งั้นรูปแนวตั้งจะถูกอัปแบบตะแคง
+  try { bm = await createImageBitmap(file, { imageOrientation:'from-image' }); }
   catch(e){ throw new Error('ไฟล์นี้เปิดไม่ได้ — ลองใช้รูป JPG หรือ PNG'); }
   const MAX = 800;
   const sc = Math.min(1, MAX / Math.max(bm.width, bm.height));
@@ -1610,13 +1624,16 @@ async function pickImg(input){
   const f = input.files && input.files[0];
   input.value = '';
   if (!f) return;
+  const seq = S.menuImgSeq;        // รอบที่กล่องนี้ถูกเปิด
   try {
     const blob = await shrinkImg(f);
+    if (seq !== S.menuImgSeq) return;   // ผู้ใช้ปิด/สลับเมนูไปแล้วระหว่างย่อรูป → ทิ้งรูปนี้
     S.menuImgBlob = blob; S.menuImgDrop = false;
     $('mi_prev').innerHTML = `<img src="${URL.createObjectURL(blob)}" alt="">`;
     $('mi_imgact').innerHTML = `<button class="btn sm sec" onclick="clearImg()">เอารูปออก</button>`;
     $('mi_err').innerHTML = '';
   } catch(e){
+    if (seq !== S.menuImgSeq) return;
     $('mi_err').innerHTML = `<div class="note warn" style="margin-top:6px">${esc(e.message||e)}</div>`;
   }
 }
@@ -1719,7 +1736,7 @@ async function doDelMenu(id){
 // ---------- หมวด ----------
 function openCat(id){
   const c = id ? (S.cats||[]).find(x=>x.id===id) : null;
-  const n = c ? (S.menu||[]).filter(r=>r.category_code===c.code && r.is_active).length : 0;
+  const n = c ? (S.menu||[]).filter(r=>r.category_id===c.id && r.is_active).length : 0;
   openM(`<h3>${c?'✏️ แก้ไขหมวด':'➕ เพิ่มหมวดใหม่'}</h3>
     ${c?`<div class="note" style="margin-top:0">หมวดนี้มีเมนูขายอยู่ <b>${n}</b> รายการ
          ${n?'· ปิดหมวดไม่ได้จนกว่าจะย้ายหรือซ่อนเมนูพวกนั้นก่อน':''}</div>`:''}
